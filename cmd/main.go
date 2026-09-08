@@ -25,8 +25,7 @@ func main() {
 		log.Fatalf("bootstrap admin: %v", err)
 	}
 
-	dl := downloader.NewClient()
-	runner := scheduler.NewRunner(st, dl.Fetch)
+	runner := scheduler.NewRunner(st, downloader.SettingsFetcher(st.GetSettings))
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	runner.Start(ctx)

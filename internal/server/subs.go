@@ -1,11 +1,13 @@
 package server
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"net/http"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -60,7 +62,17 @@ func (s *Server) handleCreateSub(c *gin.Context) {
 		abortError(c, http.StatusInternalServerError, "save failed")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"message": "success", "name": name})
+	// A freshly created remote subscription is fetched immediately and the
+	// raw content is stored locally, so downloads/preview serve the cached
+	// node list until the next manual update or cron refresh.
+	resp := gin.H{"message": "success", "name": name}
+	var sub model.Sub
+	if err := share.Remarshal(body, &sub); err == nil && sub.Source == "remote" {
+		if werr := s.refreshRemoteSubCache(sub, body); werr != nil {
+			resp["warning"] = "订阅已保存，但拉取订阅链接失败：" + werr.Error()
+		}
+	}
+	c.JSON(http.StatusOK, resp)
 }
 
 func (s *Server) handleGetSub(c *gin.Context) {
@@ -106,6 +118,11 @@ func (s *Server) handlePatchSub(c *gin.Context) {
 		}
 		newName = n
 	}
+	// Capture the pre-merge source identity so we can tell whether the
+	// remote endpoint (url/ua) actually changed after the merge below.
+	oldURL := getStr(existing, "url")
+	oldUA := getStr(existing, "ua")
+	oldSource := getStr(existing, "source")
 	for k, v := range body {
 		if k == "name" {
 			existing["name"] = v
@@ -135,6 +152,19 @@ func (s *Server) handlePatchSub(c *gin.Context) {
 		abortError(c, http.StatusBadRequest, err.Error())
 		return
 	}
+	// When the URL or UA of a remote sub changes (or the source switches to
+	// remote), the old cached snapshot no longer matches the link — drop it
+	// before persisting so a failed refresh can never serve stale nodes.
+	// The cache is re-populated right after the save.
+	if getStr(existing, "source") == "remote" {
+		identityChanged := getStr(existing, "url") != oldURL ||
+			getStr(existing, "ua") != oldUA ||
+			oldSource != "remote"
+		if identityChanged {
+			existing["cachedContent"] = ""
+			existing["cachedAt"] = 0
+		}
+	}
 	// When the subscription is renamed, keep its original position (like
 	// Sub-Store's updateByName) and update every collection that references
 	// the old name so the references don't silently break. Both steps run in
@@ -160,7 +190,16 @@ func (s *Server) handlePatchSub(c *gin.Context) {
 			return
 		}
 	}
-	c.JSON(http.StatusOK, gin.H{"message": "success", "name": newName})
+	// Editing a remote subscription re-fetches it immediately so the local
+	// snapshot always reflects the current link/UA after a save.
+	resp := gin.H{"message": "success", "name": newName}
+	var sub model.Sub
+	if err := share.Remarshal(existing, &sub); err == nil && sub.Source == "remote" {
+		if werr := s.refreshRemoteSubCache(sub, existing); werr != nil {
+			resp["warning"] = "订阅已保存，但拉取订阅链接失败：" + werr.Error()
+		}
+	}
+	c.JSON(http.StatusOK, resp)
 }
 
 func (s *Server) handleDeleteSub(c *gin.Context) {
@@ -188,6 +227,56 @@ func (s *Server) handleDeleteSub(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "success"})
+}
+
+// refreshRemoteSubCache performs a live fetch of the subscription with the
+// sub's UA and stores the raw content as the local snapshot
+// (cachedContent/cachedAt). rec is the persisted record map to update;
+// pass the same map that was (or will be) saved so the cache write doesn't
+// clobber concurrent field edits.
+func (s *Server) refreshRemoteSubCache(sub model.Sub, rec map[string]any) error {
+	if sub.URL == "" {
+		return errors.New("订阅没有 URL")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	content, err := s.Share.FetchLive(ctx, sub)
+	if err != nil {
+		return err
+	}
+	rec["cachedContent"] = content
+	rec["cachedAt"] = time.Now().UnixMilli()
+	return s.Store.UpsertSub(sub.Name, rec, "bottom")
+}
+
+// handleUpdateSub manually refreshes a remote subscription: it always hits
+// the remote URL (cache-bypassing) and overwrites the local snapshot.
+func (s *Server) handleUpdateSub(c *gin.Context) {
+	name := c.Param("name")
+	rec, err := s.Store.GetSub(name)
+	if err != nil {
+		abortError(c, http.StatusInternalServerError, "database error")
+		return
+	}
+	if rec == nil {
+		abortError(c, http.StatusNotFound, "subscription not found")
+		return
+	}
+	var sub model.Sub
+	if err := share.Remarshal(rec, &sub); err != nil {
+		abortError(c, http.StatusInternalServerError, "decode failed")
+		return
+	}
+	if sub.Source != "remote" || sub.URL == "" {
+		abortError(c, http.StatusBadRequest, "本地订阅无需更新")
+		return
+	}
+	if err := s.refreshRemoteSubCache(sub, rec); err != nil {
+		abortError(c, http.StatusBadGateway, "更新失败："+err.Error())
+		return
+	}
+	cachedAt, _ := rec["cachedAt"].(int64)
+	c.JSON(http.StatusOK, gin.H{"message": "success", "cachedAt": cachedAt})
 }
 
 // handleNodeInfo returns a JSON preview of a subscription's parsed nodes.
@@ -297,6 +386,7 @@ func validateAndNormalizeSubBody(body map[string]any) error {
 	src := getStr(body, "source")
 	if src == "" {
 		src = "remote"
+		body["source"] = src
 	}
 	switch src {
 	case "local":

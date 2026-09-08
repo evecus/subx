@@ -96,6 +96,7 @@ func (s *Server) buildRouter() *gin.Engine {
 		authed.POST("/subs", s.handleCreateSub)
 		authed.GET("/sub/:name", s.handleGetSub)
 		authed.PATCH("/sub/:name", s.handlePatchSub)
+		authed.POST("/sub/:name/update", s.handleUpdateSub)
 		authed.DELETE("/sub/:name", s.handleDeleteSub)
 
 		// collections

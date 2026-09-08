@@ -48,6 +48,10 @@ export function deleteSub(name) {
   return api.delete(`/sub/${encodeURIComponent(name)}`)
 }
 
+export function updateSub(name) {
+  return api.post(`/sub/${encodeURIComponent(name)}/update`)
+}
+
 export function nodeInfo(name) {
   return api.get(`/node-info/${encodeURIComponent(name)}`)
 }

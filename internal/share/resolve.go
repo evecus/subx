@@ -21,14 +21,26 @@ type Resolver struct {
 	Fetch func(ctx context.Context, sub model.Sub) (string, error)
 }
 
-// NewResolver creates a resolver backed by the given store.
+// NewResolver creates a resolver backed by the given store. The fetch
+// function resolves the default UA from the store's `defaultUserAgent`
+// setting at call time (Sub-Store: ua || defaultUserAgent || clash.meta UA).
 func NewResolver(s *store.Store) *Resolver {
 	return &Resolver{
 		Store: s,
-		Fetch: func(ctx context.Context, sub model.Sub) (string, error) {
-			return downloader.NewClient().Fetch(ctx, sub)
-		},
+		Fetch: downloader.SettingsFetcher(s.GetSettings),
 	}
+}
+
+// newSettingsClient builds a downloader client whose default UA follows the
+// `defaultUserAgent` setting, for live (cache-bypassing) fetches.
+func (r *Resolver) newSettingsClient() *downloader.Client {
+	c := downloader.NewClient()
+	if settings, err := r.Store.GetSettings(); err == nil && settings != nil {
+		if d, ok := settings["defaultUserAgent"].(string); ok {
+			c.DefaultUA = d
+		}
+	}
+	return c
 }
 
 // TargetName returns the token payload for a token string.
@@ -312,6 +324,13 @@ func ProcessProxies(proxies []*model.Proxy, target string, options map[string]an
 // FetchSub downloads the raw content of a subscription.
 func (r *Resolver) FetchSub(ctx context.Context, sub model.Sub) (string, error) {
 	return r.Fetch(ctx, sub)
+}
+
+// FetchLive performs a live HTTP fetch of the subscription URL, bypassing
+// any cached content. Used by manual update / save-time refresh / cron so a
+// refresh always hits the remote endpoint with the sub's UA.
+func (r *Resolver) FetchLive(ctx context.Context, sub model.Sub) (string, error) {
+	return r.newSettingsClient().FetchURL(ctx, sub.URL, sub.UA)
 }
 
 // PreviewSub fetches and parses a subscription without producing output.

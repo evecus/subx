@@ -17,9 +17,17 @@
         </template>
       </el-table-column>
       <el-table-column prop="url" label="URL" min-width="220" show-overflow-tooltip />
-      <el-table-column label="操作" width="260" fixed="right">
+      <el-table-column label="上次更新" width="160">
+        <template #default="{ row }">
+          <span v-if="row.source !== 'local' && row.cachedAt">{{ formatTime(row.cachedAt) }}</span>
+          <span v-else-if="row.source !== 'local'" class="text-muted">未拉取</span>
+          <span v-else class="text-muted">—</span>
+        </template>
+      </el-table-column>
+      <el-table-column label="操作" width="330" fixed="right">
         <template #default="{ row }">
           <el-button size="small" @click="openEdit(row)">编辑</el-button>
+          <el-button v-if="row.source !== 'local'" size="small" type="primary" plain :loading="updating === row.name" @click="update(row)">更新</el-button>
           <el-button size="small" @click="preview(row)">预览</el-button>
           <el-button size="small" type="danger" @click="remove(row)">删除</el-button>
         </template>
@@ -36,8 +44,13 @@
           <span class="mobile-card-label">URL</span>
           <span class="mobile-card-value ellipsis">{{ row.url }}</span>
         </div>
+        <div class="mobile-card-row" v-if="row.source !== 'local'">
+          <span class="mobile-card-label">上次更新</span>
+          <span class="mobile-card-value">{{ row.cachedAt ? formatTime(row.cachedAt) : '未拉取' }}</span>
+        </div>
         <div class="mobile-card-actions">
           <el-button size="small" @click="openEdit(row)">编辑</el-button>
+          <el-button v-if="row.source !== 'local'" size="small" type="primary" plain :loading="updating === row.name" @click="update(row)">更新</el-button>
           <el-button size="small" @click="preview(row)">预览</el-button>
           <el-button size="small" type="danger" @click="remove(row)">删除</el-button>
         </div>
@@ -65,7 +78,7 @@
             格式不正确，应为标准 5 段 cron：分 时 日 月 周，例如 0 0 * * *（每天 0 点）
           </div>
           <div v-else class="field-hint">
-            按 cron 表达式定时重新拉取该订阅并缓存结果；留空表示每次读取都是实时拉取
+            按 cron 表达式定时重新拉取该订阅并覆盖本地缓存；保存和手动「更新」时会立即拉取一次
           </div>
         </el-form-item>
         <el-form-item v-else label="内容">
@@ -118,12 +131,13 @@
 <script setup>
 import { ref, computed, onMounted, nextTick, onBeforeUnmount } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { listSubs, createSub, patchSub, deleteSub } from '../api'
+import { listSubs, createSub, patchSub, deleteSub, updateSub } from '../api'
 import { useTargets } from '../composables/useTargets'
 
 const subs = ref([])
 const loading = ref(false)
 const saving = ref(false)
+const updating = ref('')
 const dialog = ref(false)
 const editing = ref(false)
 const previewDialog = ref(false)
@@ -342,12 +356,18 @@ async function save() {
     } else {
       data.content = ''
     }
+    let saveResp
     if (editing.value) {
-      await patchSub(form.value.name, data)
+      saveResp = await patchSub(form.value.name, data)
     } else {
-      await createSub(data)
+      saveResp = await createSub(data)
     }
-    ElMessage.success('已保存')
+    const warn = saveResp?.data?.warning
+    if (warn) {
+      ElMessage.warning(warn)
+    } else {
+      ElMessage.success('已保存')
+    }
     dialog.value = false
     await load()
   } catch (e) {
@@ -371,6 +391,25 @@ async function remove(row) {
 function preview(row) {
   previewName.value = row.name
   previewDialog.value = true
+}
+
+function formatTime(ms) {
+  const d = new Date(ms)
+  const pad = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
+async function update(row) {
+  updating.value = row.name
+  try {
+    const { data } = await updateSub(row.name)
+    ElMessage.success(data?.cachedAt ? `已更新（${formatTime(data.cachedAt)}）` : '已更新')
+    await load()
+  } catch (e) {
+    ElMessage.error(e.response?.data?.message || '更新失败')
+  } finally {
+    updating.value = ''
+  }
 }
 
 function openPreview(target) {
@@ -402,6 +441,7 @@ onMounted(load)
   color: #f56c6c;
 }
 .toolbar { margin-bottom: 16px; display: flex; gap: 10px; flex-wrap: wrap; }
+.text-muted { color: var(--text-muted); }
 .target-grid {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
