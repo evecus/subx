@@ -1,0 +1,9 @@
+data/
+*.db
+web/node_modules/
+web/dist/
+.git/
+.github/
+substore
+*.exe
+*.log
