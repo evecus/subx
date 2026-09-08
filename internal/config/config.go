@@ -64,7 +64,7 @@ func Load() *Config {
 		Port:          getenvInt("port", 3000),
 		PathPrefix:    normalizePathPrefix(getenv("base_path", "")),
 		DataDir:       dataDir,
-		DBPath:        filepath.Join(dataDir, "substore.db"),
+		DBPath:        filepath.Join(dataDir, "subx.db"),
 		JWTSecret:     loadOrCreateJWTSecret(dataDir),
 		TokenTTLHours: getenvInt("token_ttl_hours", 24*7),
 		AdminUsername: adminUsername,

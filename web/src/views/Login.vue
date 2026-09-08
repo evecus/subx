@@ -4,8 +4,8 @@
     <div class="glow glow-2"></div>
     <el-card class="login-card">
       <div class="brand">
-        <span class="brand-dot"></span>
-        <div class="login-title">Sub-Store</div>
+        <img class="brand-icon" src="/favicon.svg" alt="SubX" />
+        <div class="login-title">SubX</div>
       </div>
       <div class="login-subtitle">订阅管理，简单又灵活</div>
       <el-form @submit.prevent="doLogin" label-position="top" class="login-form">
@@ -97,11 +97,11 @@ async function doLogin() {
   gap: 8px;
   margin-top: 4px;
 }
-.brand-dot {
-  width: 10px; height: 10px;
-  border-radius: 50%;
-  background: var(--brand-gradient);
-  box-shadow: 0 0 0 6px rgba(99, 102, 241, 0.12);
+.brand-icon {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  display: block;
 }
 .login-title {
   text-align: center;

@@ -3,8 +3,8 @@
     <div v-if="mobileNavOpen" class="aside-overlay" @click="mobileNavOpen = false"></div>
     <el-aside width="220px" class="aside" :class="{ 'aside-open': mobileNavOpen }">
       <div class="logo">
-        <span class="logo-dot"></span>
-        <span class="logo-text">Sub-Store</span>
+        <img class="logo-icon" src="/favicon.svg" alt="SubX" />
+        <span class="logo-text">SubX</span>
       </div>
       <el-menu :default-active="$route.path" router class="nav-menu" @select="mobileNavOpen = false">
         <el-menu-item index="/subs">
@@ -76,7 +76,7 @@ const titles = {
   '/tokens': '分享管理',
   '/settings': '设置',
 }
-const pageTitle = computed(() => titles[route.path] || 'Sub-Store')
+const pageTitle = computed(() => titles[route.path] || 'SubX')
 
 watch(() => route.path, () => {
   mobileNavOpen.value = false
@@ -139,12 +139,11 @@ function onCommand(cmd) {
   gap: 10px;
   padding: 0 8px;
 }
-.logo-dot {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  background: var(--brand-gradient);
-  box-shadow: 0 0 0 5px rgba(99, 102, 241, 0.12);
+.logo-icon {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  display: block;
 }
 .logo-text {
   font-size: 17px;
