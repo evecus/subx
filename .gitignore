@@ -1,0 +1,9 @@
+/target
+/subx-linux-x86_64
+/data
+*.db
+*.db-shm
+*.db-wal
+web/node_modules/
+.DS_Store
+*.log
