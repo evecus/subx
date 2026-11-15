@@ -188,7 +188,9 @@ pub fn parse_text(raw: &str) -> Vec<Proxy> {
         if line.is_empty() {
             continue;
         }
-        if let Some(p) = parse_line(line) {
+        if let Some(mut p) = parse_line(line) {
+            // 统一吸收 Xray 风格（echConfigList / echForceQuery / echSockopt）字段
+            crate::ech::absorb_all_ech(&mut p);
             // 对齐 Sub-Store parseAll：hysteria2 带 obfs 但无 obfs-password 的节点丢弃
             if p.type_() == "hysteria2"
                 && !p.get_str("obfs").is_empty()

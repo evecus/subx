@@ -1,6 +1,7 @@
 //! 单元/集成测试：解析、产出、cron、配置、存储、token。
 
 use crate::config::normalize_path_prefix;
+use crate::model::Proxy;
 use crate::parser;
 use crate::producer;
 use crate::scheduler;
@@ -162,4 +163,182 @@ fn operators_pipeline() {
     let filtered = crate::processor::apply(proxies, &ops, &Default::default()).unwrap();
     assert_eq!(filtered.len(), 1);
     assert_eq!(filtered[0].type_(), "ss");
+}
+
+// ---------------- 移植的四项极边缘分支 ----------------
+
+fn proxy(v: serde_json::Value) -> Proxy {
+    Proxy::from_value(&v).unwrap()
+}
+
+#[test]
+fn ech_full_negotiation() {
+    // Xray echConfigList（DoH 形式）-> mihomo ech-opts -> URI / sing-box
+    let line = "vless://11111111-1111-1111-1111-111111111111@e.com:443?encryption=none&security=tls&ech=ech.example.com%2Bhttps%3A%2F%2F1.1.1.1%2Fdns-query#ECH";
+    let p = parser::parse(line);
+    assert_eq!(p.len(), 1);
+    let eo = p[0].get_map("ech-opts").expect("ech-opts");
+    assert_eq!(eo.get("_dns").unwrap(), "https://1.1.1.1/dns-query");
+    assert_eq!(eo.get("query-server-name").unwrap(), "ech.example.com");
+    assert_eq!(eo.get("enable").unwrap(), true);
+
+    // 完整协商字段：config + force-query + sockopt
+    let full = proxy(json!({
+        "name": "ECH2", "type": "vless", "server": "e.com", "port": 443,
+        "uuid": "u", "tls": true, "network": "tcp",
+        "ech-opts": {
+            "enable": true, "config": "ECHCFG",
+            "_force-query": "half", "_sockopt": {"dialer-proxy": "d1"}
+        }
+    }));
+    let uri = producer::produce("uri", &[full.clone()], None).unwrap();
+    let qpart = uri.split('?').nth(1).unwrap().split('#').next().unwrap();
+    let params = crate::util::parse_query(qpart);
+    assert_eq!(params.get("ech").map(|s| s.as_str()), Some("ECHCFG"));
+    let sb: serde_json::Value = serde_json::from_str(&producer::produce("sing-box", &[full], None).unwrap()).unwrap();
+    let ech = &sb["outbounds"][0]["tls"]["ech"];
+    assert_eq!(ech["enabled"], true);
+    assert_eq!(ech["query_server_name"], serde_json::Value::Null);
+    // config 被归一成 PEM 行数组并自动包裹 BEGIN/END
+    let cfg = ech["config"].as_array().unwrap();
+    assert!(cfg.iter().any(|v| v == "-----BEGIN ECH CONFIGS-----"));
+    assert!(cfg.iter().any(|v| v == "ECHCFG"));
+}
+
+#[test]
+fn xhttp_download_settings_roundtrip() {
+    let p = proxy(json!({
+        "name": "XHTTP", "type": "vless", "server": "x.com", "port": 443,
+        "uuid": "u", "tls": true, "network": "xhttp",
+        "xhttp-opts": {
+            "path": "/up", "mode": "stream-up",
+            "headers": {"Host": "cdn.x.com"},
+            "download-settings": {
+                "server": "d.com", "port": 8443, "tls": true,
+                "ech-opts": {"enable": true, "config": "ECHCFG"},
+                "path": "/down"
+            }
+        }
+    }));
+    let uri = producer::produce("uri", &[p], None).unwrap();
+    let qpart = uri.split('?').nth(1).unwrap().split('#').next().unwrap();
+    let params = crate::util::parse_query(qpart);
+    let extra: serde_json::Value = serde_json::from_str(params.get("extra").unwrap()).unwrap();
+    let ds = &extra["downloadSettings"];
+    assert_eq!(ds["network"], "xhttp");
+    assert_eq!(ds["address"], "d.com");
+    assert_eq!(ds["security"], "tls");
+    assert_eq!(ds["tlsSettings"]["echConfigList"], "ECHCFG");
+    let xs = &ds["xhttpSettings"];
+    assert_eq!(xs["path"], "/down", "download-settings 自己的 path 优先");
+    assert_eq!(xs["host"], "cdn.x.com", "host 从外层 xhttp-opts 继承");
+    assert_eq!(xs["mode"], "stream-up", "mode 从外层 xhttp-opts 继承");
+
+    // 反向：URI -> mihomo xhttp-opts.download-settings
+    let reparsed = parser::parse(&uri);
+    assert_eq!(reparsed.len(), 1);
+    let opts = reparsed[0].get_map("xhttp-opts").unwrap();
+    let ds2 = opts.get("download-settings").and_then(|v| v.as_object()).unwrap();
+    assert_eq!(ds2.get("server").unwrap(), "d.com");
+    assert_eq!(ds2.get("port").unwrap(), 8443);
+    assert!(ds2.get("ech-opts").is_some());
+
+    // mihomo 平台：主节点 Reality + 下载流 tls -> 注入空 public-key 阻断继承
+    let reality = proxy(json!({
+        "name": "R", "type": "vless", "server": "r.com", "port": 443,
+        "uuid": "u", "tls": true, "network": "xhttp",
+        "reality-opts": {"public-key": "PUBKEY"},
+        "xhttp-opts": {
+            "mode": "stream-up",
+            "download-settings": {"tls": true}
+        }
+    }));
+    let clash = producer::produce("mihomo", &[reality], None).unwrap();
+    assert!(clash.contains("\"public-key\":\"\""), "{}", clash);
+}
+
+#[test]
+fn singbox_full_chain() {
+    let ss = proxy(json!({
+        "name": "ST", "type": "ss", "server": "s.com", "port": 443,
+        "cipher": "aes-128-gcm", "password": "pw", "plugin": "shadow-tls",
+        "plugin-opts": {"version": 3, "password": "stpw", "host": "tls.com"},
+        "tls": true, "sni": "tls.com"
+    }));
+    let wg = proxy(json!({
+        "name": "WG", "type": "wireguard", "server": "w.com", "port": 51820,
+        "private-key": "priv", "public-key": "pub", "ip": "10.0.0.2/32"
+    }));
+    let chain = proxy(json!({
+        "name": "Chain", "type": "vless", "server": "v.com", "port": 443,
+        "uuid": "u", "tls": true, "network": "ws", "skip-cert-verify": true,
+        "ws-opts": {"path": "/ws", "headers": {"Host": "h.com"}},
+        "ech-opts": {"enable": true, "config": "AAA"},
+        "smux": {"enabled": true, "protocol": "smux", "max-streams": 4,
+                 "brutal-opts": {"up": 10}},
+        "ip-version": "ipv4", "_dns_server": "1.1.1.1", "tfo": true, "uot": true
+    }));
+    let unsupported = proxy(json!({
+        "name": "Bad", "type": "vless", "server": "b.com", "port": 443,
+        "uuid": "u", "network": "xhttp"
+    }));
+    let doc: serde_json::Value = serde_json::from_str(
+        &producer::produce("sing-box", &[ss, wg, chain, unsupported], None).unwrap()
+    ).unwrap();
+    let outbounds = doc["outbounds"].as_array().unwrap();
+    let endpoints = doc["endpoints"].as_array().unwrap();
+    assert_eq!(endpoints.len(), 1, "wireguard 应归入 endpoints");
+    assert_eq!(endpoints[0]["type"], "wireguard");
+    assert!(outbounds.iter().any(|x| x["type"] == "shadowtls"));
+    assert!(outbounds.iter().any(|x| x["detour"] == "ST_shadowtls"), "ss 走 shadowtls detour");
+    assert!(!outbounds.iter().any(|x| x["tag"] == "Bad"), "xhttp 节点整组丢弃");
+    let c = outbounds.iter().find(|x| x["tag"] == "Chain").unwrap();
+    assert_eq!(c["domain_resolver"]["strategy"], "ipv4_only");
+    assert_eq!(c["multiplex"]["brutal"]["up_mbps"], 10);
+    assert_eq!(c["tcp_fast_open"], true);
+    assert_eq!(c["udp_over_tcp"], true);
+    assert_eq!(c["transport"]["type"], "ws");
+    assert_eq!(c["transport"]["host"], "h.com");
+    assert_eq!(c["tls"]["ech"]["enabled"], true);
+    assert_eq!(c["tls"]["server_name"], "h.com", "insecure/Host 组合应生效");
+}
+
+#[test]
+fn egern_surgemac_passthrough() {
+    let eg = proxy(json!({
+        "name": "E", "type": "ss", "server": "1.1.1.1", "port": 8388,
+        "cipher": "aes-256-gcm", "password": "pw",
+        "egern-opts": {"block-quic": true, "underlying-proxy": "P", "no-error-alert": true},
+        "test-url": "http://www.gstatic.com/generate_204"
+    }));
+    let egern = producer::produce("egern", &[eg], None).unwrap();
+    assert!(egern.contains("\"block-quic\":true"), "{}", egern);
+    assert!(egern.contains("\"underlying-proxy\":\"P\""), "{}", egern);
+    assert!(egern.contains("\"no-error-alert\":true"), "{}", egern);
+    assert!(egern.contains("\"test-url\":\"http://www.gstatic.com/generate_204\""), "{}", egern);
+
+    let ext = proxy(json!({
+        "name": "Ext", "type": "external", "exec": "/usr/bin/mihomo", "local-port": 7890,
+        "args": ["-config", "/tmp/c.yaml"], "addresses": ["1.1.1.1"], "udp": true,
+        "test-url": "http://x", "block-quic": true,
+        "surge-mac-opts": {"no-error-alert": true}
+    }));
+    let sm = producer::produce("surge-mac", &[ext], None).unwrap();
+    assert!(sm.contains("= external,exec=\"/usr/bin/mihomo\",local-port=7890"), "{}", sm);
+    assert!(sm.contains("args=\"/tmp/c.yaml\""), "{}", sm);
+    assert!(sm.contains("no-error-alert=true"), "{}", sm);
+    assert!(sm.contains("block-quic=true"), "{}", sm);
+
+    // mihomoExternal 选项 -> external 行携带 base64 配置
+    let mut opts = JMap::new();
+    opts.insert("mihomoExternal".into(), json!(true));
+    opts.insert("localPort".into(), json!(7891));
+    let normal = proxy(json!({
+        "name": "M", "type": "trojan", "server": "t.com", "port": 443,
+        "password": "pw", "tls": true, "sni": "t.com"
+    }));
+    let m = producer::produce("surge-mac", &[normal], Some(&opts)).unwrap();
+    assert!(m.contains("= external,"), "{}", m);
+    assert!(m.contains("local-port=7891"), "{}", m);
+    assert!(m.contains("args=\"-config\""), "{}", m);
 }

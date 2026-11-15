@@ -1,7 +1,9 @@
 //! JSON / URI / V2Ray 产出，以及单节点 URI 生成（ToURI）。
 
+use crate::ech;
 use crate::model::Proxy;
 use crate::util::{base64_encode, is_ipv6, path_escape, query_escape, JMap};
+use crate::xhttp;
 use serde_json::{json as j, Value};
 
 pub fn produce_json(proxies: &[Proxy]) -> String {
@@ -92,6 +94,10 @@ fn append_common(q: &mut Query, p: &Proxy) {
     q.push("alpn", &alpn_str(p));
     q.flag("allowInsecure", p.get_bool("skip-cert-verify"), "1");
     q.push("tfo", if p.get_bool("tfo") { "1" } else { "" });
+    q.push("ech", &ech::build_xray_ech_config_list(
+        p.get_map("ech-opts").as_ref(),
+        &p.get_str("_echConfigList"),
+    ));
 }
 
 /// 把单个 Proxy 转换成 URI；不支持的类型返回空串（由调用方跳过）。
@@ -195,6 +201,17 @@ fn vless_uri(p: &Proxy) -> String {
         q.push("sid", &crate::util::get_str(&r, "short-id"));
     }
     q.flag("allowInsecure", p.get_bool("skip-cert-verify"), "1");
+    // ECH 完整协商：ech-opts -> echConfigList（含 DoH / force-query / sockopt）
+    q.push("ech", &ech::build_xray_ech_config_list(
+        p.get_map("ech-opts").as_ref(),
+        &p.get_str("_echConfigList"),
+    ));
+    // xhttp 结构化 extra（含 downloadSettings 继承）
+    if p.get_str("network") == "xhttp" {
+        if let Some(extra) = xhttp::build_structured_extra(p) {
+            q.push("extra", &serde_json::to_string(&Value::Object(extra)).unwrap_or_default());
+        }
+    }
     let query = q.build();
     format!("vless://{}@{}{}{}{}", p.get_str("uuid"), host_port(p), if query.is_empty() { "" } else { "?" }, query, fragment(p))
 }

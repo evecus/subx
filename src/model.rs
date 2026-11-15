@@ -124,10 +124,12 @@ impl Proxy {
     }
 
     pub fn is_ss_over_tls(&self) -> bool {
-        if self.type_() != "ss" {
+        // 对齐 Go producer/normalize.go：ss + tls + 无 plugin + (network 为空或 tcp)
+        if self.type_() != "ss" || !self.get_bool("tls") || self.has("plugin") {
             return false;
         }
-        matches!(self.get_str("plugin").as_str(), "shadow-tls" | "v2ray-plugin")
+        let net = self.get_str("network");
+        net.is_empty() || net.trim().eq_ignore_ascii_case("tcp")
     }
 }
 

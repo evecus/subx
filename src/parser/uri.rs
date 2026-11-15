@@ -1,7 +1,9 @@
 //! 各协议 URI 解析，产出统一的 Proxy 动态字段对象。
 
+use crate::ech;
 use crate::model::Proxy;
 use crate::parser::arr_of_strings;
+use crate::xhttp;
 use crate::util::{
     base64_decode, base64_decode_or_self, get_str, is_true, parse_query, query_decode,
     split_host_port, url_decode, value_str, JMap,
@@ -144,6 +146,14 @@ fn apply_common_query(p: &mut Proxy, parts: &UriParts) {
     let ua = q(parts, "ua");
     if !ua.is_empty() {
         p.set("user-agent", ua);
+    }
+    // ECH 完整协商：Xray echConfigList -> mihomo ech-opts
+    let ech_raw = q(parts, "ech");
+    if !ech_raw.is_empty() {
+        p.set("_echConfigList", ech_raw);
+        if let Some(opts) = ech::build_mihomo_ech_opts(Some(&json!(ech_raw)), None, None) {
+            p.set_value("ech-opts", Value::Object(opts));
+        }
     }
 }
 
@@ -464,16 +474,16 @@ fn parse_vless(payload: &str) -> Option<Proxy> {
     if !flow.is_empty() {
         p.set("flow", flow);
     }
-    let ech = q(&parts, "ech");
-    if !ech.is_empty() {
-        p.set("_echConfigList", ech);
-        let mut ech_opts = JMap::new();
-        ech_opts.insert("enable".into(), json!(true));
-        ech_opts.insert("config".into(), json!(ech));
-        p.set_value("ech-opts", Value::Object(ech_opts));
-    }
     apply_common_query(&mut p, &parts);
     apply_transport(&mut p, &parts);
+    // xhttp 结构化 extra：downloadSettings 解析与字段继承
+    if p.get_str("network") == "xhttp" {
+        if let Some(raw) = parts.query.get("extra") {
+            if let Some(v) = crate::util::json_loose(raw) {
+                xhttp::absorb_xhttp_extra(&mut p, Some(&v));
+            }
+        }
+    }
     if p.get_str("network").is_empty() {
         p.set("network", "tcp");
     }

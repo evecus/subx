@@ -2,6 +2,7 @@
 
 pub mod clash;
 pub mod lines;
+pub mod platform;
 pub mod singbox;
 pub mod uri;
 
@@ -37,10 +38,11 @@ pub fn produce(target: &str, proxies: &[Proxy], options: Option<&JMap>) -> Resul
         "clash" | "mihomo" | "meta" | "clashmeta" | "clash.meta" | "stash" | "shadowrocket" => {
             clash::produce_clash(&t, &list, options)
         }
-        "egern" => clash::produce_egern(&list),
+        "egern" => platform::produce_egern(&list, options),
         "sing-box" | "singbox" => singbox::produce_singbox(&list, options),
         "qx" => Ok(lines::produce_qx(&list)),
-        "surge" | "surge-mac" | "surgemac" => Ok(lines::produce_surge(&t, &list)),
+        "surge" => Ok(lines::produce_surge(&t, &list)),
+        "surge-mac" | "surgemac" => platform::produce_surgemac(&list, options),
         "surfboard" => Ok(lines::produce_surfboard(&list)),
         "loon" => Ok(lines::produce_loon(&list)),
         _ => Err(anyhow!("unsupported target: {}", target)),
@@ -112,6 +114,14 @@ pub fn prepare(proxies: &[Proxy], target: &str, options: Option<&JMap>) -> Vec<P
         }
         if c.type_() == "wireguard" {
             normalize_wireguard_interface(&mut c);
+        }
+        // xhttp download-settings 的 Reality 继承 / stream-one 过滤（对齐 Go produce.go）
+        let mihomo = matches!(
+            target,
+            "clash" | "mihomo" | "meta" | "clashmeta" | "clash.meta" | "stash" | "shadowrocket"
+        );
+        if !crate::xhttp::filter_or_inherit(&mut c, mihomo) {
+            continue;
         }
         drop_internal_fields(&mut c);
         out.push(c);

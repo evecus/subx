@@ -5,27 +5,10 @@ use crate::model::Proxy;
 use crate::producer::{drop_internal_fields, include_unsupported};
 use crate::util::JMap;
 use anyhow::Result;
-use serde_json::Value;
 
 const CLASH_ORIGINAL_TYPES: &[&str] = &[
     "ss", "ssr", "vmess", "vless", "socks5", "http", "snell", "trojan", "wireguard",
 ];
-
-const EGERN_TYPES: &[&str] = &[
-    "http", "https", "socks5", "ss", "ssr", "trojan", "hysteria2", "vless", "vmess",
-    "tuic", "wireguard", "anytls", "ssh", "snell",
-];
-
-fn egern_key(typ: &str) -> String {
-    match typ {
-        "ss" => "shadowsocks",
-        "ssr" => "shadowsocksr",
-        "https" => "http",
-        "hy2" => "hysteria2",
-        other => other,
-    }
-    .to_string()
-}
 
 fn clash_filter(p: &Proxy, target: &str, options: Option<&JMap>) -> bool {
     if include_unsupported(options) {
@@ -86,25 +69,4 @@ pub fn produce_clash(target: &str, proxies: &[Proxy], options: Option<&JMap>) ->
         .map(clash_map)
         .collect();
     Ok(proxy_list_block(&list))
-}
-
-pub fn produce_egern(proxies: &[Proxy]) -> Result<String> {
-    let mut out = String::from("proxies:\n");
-    for p in proxies {
-        if !EGERN_TYPES.contains(&p.type_().as_str()) {
-            continue;
-        }
-        let mut c = p.deep_clone();
-        drop_internal_fields(&mut c);
-        let key = egern_key(&p.type_());
-        let mut inner = c.fields().clone();
-        inner.remove("type");
-        let mut wrapped_map = JMap::new();
-        wrapped_map.insert(key, Value::Object(inner));
-        let wrapped = Value::Object(wrapped_map);
-        out.push_str("  - ");
-        out.push_str(&serde_json::to_string(&wrapped).unwrap_or_default());
-        out.push('\n');
-    }
-    Ok(out)
 }
