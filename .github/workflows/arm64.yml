@@ -31,7 +31,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-        key: musl-arm64
+          key: musl-arm64
 
       # ── 3. 原生编译：ARM64 宿主机 + musl 目标，仅需 musl-gcc 作为链接器 ────
       - name: Install musl tools
